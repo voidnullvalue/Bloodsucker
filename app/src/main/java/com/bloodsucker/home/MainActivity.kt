@@ -1,11 +1,13 @@
 package com.bloodsucker.home
 
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -115,15 +117,33 @@ private enum class Tab(val title: String, val icon: ImageVector) { HOME("Home", 
 
 @Composable private fun DeviceCard(device: SmartDevice, vm: MainViewModel) {
     var expanded by remember { mutableStateOf(false) }; var edit by remember { mutableStateOf(false) }
-    ElevatedCard(onClick = { expanded = !expanded }, modifier = Modifier.fillMaxWidth(), colors = CardDefaults.elevatedCardColors(containerColor = if (!device.online) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .65f) else MaterialTheme.colorScheme.surface)) {
+    ElevatedCard(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.elevatedCardColors(containerColor = if (!device.online) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .65f) else MaterialTheme.colorScheme.surface)) {
         Column(Modifier.padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Surface(shape = RoundedCornerShape(14.dp), color = kindColor(device.kind).copy(alpha = .14f), modifier = Modifier.size(48.dp)) { Box(contentAlignment = Alignment.Center) { Icon(kindIcon(device.kind), null, tint = kindColor(device.kind)) } }
-                Spacer(Modifier.width(12.dp)); Column(Modifier.weight(1f)) { Text(device.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold); Text(listOf(device.room, freshness(device)).filter(String::isNotBlank).joinToString(" • "), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                Row(Modifier.weight(1f).clickable { expanded = !expanded }, verticalAlignment = Alignment.CenterVertically) {
+                    Surface(shape = RoundedCornerShape(14.dp), color = kindColor(device.kind).copy(alpha = .14f), modifier = Modifier.size(48.dp)) { Box(contentAlignment = Alignment.Center) { Icon(kindIcon(device.kind), null, tint = kindColor(device.kind)) } }
+                    Spacer(Modifier.width(12.dp)); Column { Text(device.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold); Text(listOf(device.room, freshness(device)).filter(String::isNotBlank).joinToString(" • "), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                }
                 IconButton({ vm.favorite(device) }) { Icon(if (device.favorite) Icons.Default.Star else Icons.Outlined.StarOutline, "Favorite", tint = if (device.favorite) MaterialTheme.colorScheme.tertiary else LocalContentColor.current) }
-                device.power?.let { checked -> Switch(checked = checked, onCheckedChange = { vm.setPower(device, it) }) }
+                if (device.kind != DeviceKind.MATTER) device.power?.let { checked ->
+                    Switch(checked = checked, onCheckedChange = { vm.setPower(device, it) })
+                }
             }
             if (device.readings.isNotEmpty()) { Spacer(Modifier.height(12.dp)); ReadingGrid(device.readings.take(6)) }
+            if (device.kind == DeviceKind.MATTER && device.power != null) {
+                Spacer(Modifier.height(12.dp))
+                FilledTonalButton(
+                    onClick = {
+                        if (BuildConfig.DEBUG) Log.d("BloodsuckerInput", "purifier control clicked")
+                        vm.setPower(device, !device.power)
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.PowerSettingsNew, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (device.power) "Turn purifier off" else "Turn purifier on")
+                }
+            }
             if (!device.supported) { Spacer(Modifier.height(10.dp)); Text("Identified, but this model's measurements aren't decoded yet.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             AnimatedVisibility(expanded) {
                 Column {
@@ -212,7 +232,7 @@ private fun readingInt(device: SmartDevice, label: String) = device.readings.fir
         item { ElevatedCard(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) { OutlinedTextField(broker, { broker = it }, label = { Text("MQTT URI") }, singleLine = true, modifier = Modifier.fillMaxWidth()); Button({ vm.broker(broker) }, enabled = broker != state.brokerUri) { Text("Save & reconnect") }; Text("Anonymous connection • QoS 0 • retained snapshot", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) } } }
         item { SectionTitle("Diagnostics", "Safe connection details") }
         item { ElevatedCard(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { DiagnosticRow("Status", connectionText(state)); DiagnosticRow("Devices", state.devices.size.toString()); DiagnosticRow("Recognized messages", state.recognizedTopics.toString()); DiagnosticRow("Ignored messages", state.ignoredTopics.toString()); state.lastError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) } } } }
-        item { Text("Bloodsucker 0.1 • Payloads and raw topics stay out of the consumer interface.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        item { Text("Bloodsucker ${BuildConfig.VERSION_NAME} • Payloads and raw topics stay out of the consumer interface.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
     }
 }
 

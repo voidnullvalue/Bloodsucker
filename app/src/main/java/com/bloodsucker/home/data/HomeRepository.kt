@@ -25,11 +25,20 @@ class HomeRepository(context: Context) {
     fun toggleFavorite(key: String) { val set = prefs.getStringSet("favorites", emptySet())!!.toMutableSet(); if (!set.add(key)) set.remove(key); prefs.edit().putStringSet("favorites", set).apply(); mutable.update { s -> s.copy(devices = s.devices.map { if (it.key == key) it.copy(favorite = key in set) else it }) } }
     fun setAlias(key: String, alias: String, room: String) { prefs.edit().putString("alias:$key", alias.trim()).putString("room:$key", room.trim()).apply(); mutable.update { s -> s.copy(devices = s.devices.map { if (it.key == key) it.copy(name = alias.ifBlank { it.name }, room = room.trim()) else it }) } }
 
-    fun setPower(device: SmartDevice, on: Boolean) = when (device.kind) {
+    fun setPower(device: SmartDevice, on: Boolean): Boolean {
+        val sent = when (device.kind) {
         DeviceKind.WLED -> publishValidated("wled/${device.key.substringAfter(':')}", if (on) "ON" else "OFF")
         DeviceKind.SWITCH -> publishValidated("gateway/device/${device.key.substringAfter(':')}/switch/set", if (on) "on" else "off")
         DeviceKind.MATTER -> matterCommand(device, if (on) 1 else 0)
         else -> false
+        }
+        mutable.update { current ->
+            if (sent) current.copy(
+                devices = current.devices.map { if (it.key == device.key) it.copy(power = on) else it },
+                lastError = null
+            ) else current.copy(lastError = "Control was not sent. Check the broker connection and try again.")
+        }
+        return sent
     }
     fun setLevel(device: SmartDevice, level: Int): Boolean {
         return when (device.kind) {

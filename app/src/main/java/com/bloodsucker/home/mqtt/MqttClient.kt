@@ -1,8 +1,10 @@
 package com.bloodsucker.home.mqtt
 
 import kotlinx.coroutines.*
+import android.util.Log
 import java.io.*
 import java.net.Socket
+import java.net.SocketTimeoutException
 import java.net.URI
 import java.util.concurrent.atomic.AtomicInteger
 import javax.net.ssl.SSLSocketFactory
@@ -28,14 +30,17 @@ class MqttClient(
                     onState(false, null)
                     val uri = URI(uriText); val port = if (uri.port > 0) uri.port else if (uri.scheme == "ssl" || uri.scheme == "tls") 8883 else 1883
                     val s = if (uri.scheme in setOf("ssl", "tls")) SSLSocketFactory.getDefault().createSocket(uri.host, port) else Socket(uri.host, port)
-                    s.soTimeout = 45_000; socket = s; output = DataOutputStream(BufferedOutputStream(s.getOutputStream()))
+                    s.soTimeout = 15_000; socket = s; output = DataOutputStream(BufferedOutputStream(s.getOutputStream()))
                     sendConnect(clientId)
                     val input = DataInputStream(BufferedInputStream(s.getInputStream()))
                     val connType = input.readUnsignedByte(); val connLen = readRemaining(input)
                     val conn = ByteArray(connLen); input.readFully(conn)
                     if (connType shr 4 != 2 || conn.size < 2 || conn[1].toInt() != 0) throw IOException("Broker rejected connection")
                     onState(true, null); subscribe("#"); backoff = 1_000L
-                    while (isActive && running) readPacket(input)
+                    while (isActive && running) {
+                        try { readPacket(input) }
+                        catch (_: SocketTimeoutException) { writePacket(0xC0, byteArrayOf()) }
+                    }
                 } catch (e: Exception) {
                     closeSocket(); if (running) onState(false, e.message ?: "Connection lost")
                     delay(backoff + Random.nextLong(0, 500)); backoff = (backoff * 2).coerceAtMost(30_000)
@@ -46,12 +51,22 @@ class MqttClient(
 
     fun disconnect() { running = false; worker?.cancel(); worker = null; closeSocket(); onState(false, null) }
 
-    @Synchronized fun publish(topic: String, payload: String): Boolean = runCatching {
-        if (output == null) return@runCatching false
-        val topicBytes = topic.toByteArray(); val body = ByteArrayOutputStream().also { b -> writeUtf(b, topicBytes); b.write(payload.toByteArray()) }.toByteArray()
-        writePacket(0x30, body)
-        true
-    }.getOrElse { false }
+    fun publish(topic: String, payload: String): Boolean {
+        if (output == null) {
+            Log.w("BloodsuckerMqtt", "publish rejected: no active output stream")
+            return false
+        }
+        scope.launch(Dispatchers.IO) {
+            runCatching {
+                val topicBytes = topic.toByteArray()
+                val body = ByteArrayOutputStream().also { b -> writeUtf(b, topicBytes); b.write(payload.toByteArray()) }.toByteArray()
+                writePacket(0x30, body)
+            }.onFailure {
+                Log.w("BloodsuckerMqtt", "publish failed: ${it.javaClass.simpleName}: ${it.message}")
+            }
+        }
+        return true
+    }
 
     private fun sendConnect(clientId: String) {
         val body = ByteArrayOutputStream()
