@@ -1,0 +1,157 @@
+package com.bloodsucker.home
+
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.outlined.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.bloodsucker.home.data.HomeRepository
+import com.bloodsucker.home.model.*
+import kotlinx.coroutines.delay
+import java.text.SimpleDateFormat
+import java.util.*
+
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) { super.onCreate(savedInstanceState); enableEdgeToEdge(); setContent { BloodsuckerTheme { App() } } }
+}
+
+class MainViewModel(private val repository: HomeRepository) : androidx.lifecycle.ViewModel() {
+    val state = repository.state
+    fun setPower(d: SmartDevice, on: Boolean) = repository.setPower(d, on)
+    fun setLevel(d: SmartDevice, value: Int) = repository.setLevel(d, value)
+    fun wake(d: SmartDevice) = repository.wake(d)
+    fun favorite(d: SmartDevice) = repository.toggleFavorite(d.key)
+    fun alias(d: SmartDevice, name: String, room: String) = repository.setAlias(d.key, name, room)
+    fun broker(uri: String) = repository.setBroker(uri)
+    fun reconnect() = repository.connect()
+}
+
+@Composable private fun model(): MainViewModel {
+    val app = LocalContext.current.applicationContext as BloodsuckerApp
+    return viewModel(factory = object : androidx.lifecycle.ViewModelProvider.Factory {
+        @Suppress("UNCHECKED_CAST") override fun <T : androidx.lifecycle.ViewModel> create(modelClass: Class<T>) = MainViewModel(app.repository) as T
+    })
+}
+
+private enum class Tab(val title: String, val icon: ImageVector) { HOME("Home", Icons.Outlined.Home), LIGHTS("Lights", Icons.Outlined.Lightbulb), CLIMATE("Climate", Icons.Outlined.Thermostat), DEVICES("Devices", Icons.Outlined.Devices), SETTINGS("Settings", Icons.Outlined.Settings) }
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable private fun App(vm: MainViewModel = model()) {
+    val state by vm.state.collectAsStateWithLifecycle(); var tab by rememberSaveable { mutableStateOf(Tab.HOME) }
+    Scaffold(
+        topBar = { TopAppBar(title = { Column { Text(tab.title, fontWeight = FontWeight.Bold); Text(connectionText(state), style = MaterialTheme.typography.labelSmall, color = connectionColor(state.connection)) } }, actions = { if (state.connection != ConnectionState.CONNECTED) IconButton(vm::reconnect) { Icon(Icons.Default.Refresh, "Reconnect") } }) },
+        bottomBar = { NavigationBar { Tab.entries.forEach { item -> NavigationBarItem(selected = tab == item, onClick = { tab = item }, icon = { Icon(item.icon, null) }, label = { Text(item.title, maxLines = 1) }) } } }
+    ) { padding ->
+        Box(Modifier.padding(padding).fillMaxSize()) {
+            when (tab) {
+                Tab.HOME -> HomeScreen(state, vm)
+                Tab.LIGHTS -> DeviceList(state.devices.filter { it.kind == DeviceKind.WLED }, "No lights yet", vm)
+                Tab.CLIMATE -> ClimateScreen(state, vm)
+                Tab.DEVICES -> DeviceList(state.devices.filter { it.kind in setOf(DeviceKind.SWITCH, DeviceKind.MATTER, DeviceKind.WAKE) }, "No controllable devices yet", vm)
+                Tab.SETTINGS -> SettingsScreen(state, vm)
+            }
+        }
+    }
+}
+
+@Composable private fun HomeScreen(state: AppState, vm: MainViewModel) {
+    val weather = state.devices.firstOrNull { it.kind == DeviceKind.WEATHER }
+    val favorites = state.devices.filter { it.favorite }
+    LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        item {
+            ElevatedCard(colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.primaryContainer), modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(20.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Outlined.WbSunny, null, Modifier.size(32.dp)); Spacer(Modifier.width(12.dp)); Column { Text(weather?.readings?.firstOrNull { it.label == "Temperature f" }?.value ?: "Home", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold); Text(weather?.readings?.firstOrNull { it.label == "Condition" }?.value ?: "Your home at a glance") } }
+                    if (weather != null) { Spacer(Modifier.height(14.dp)); ReadingGrid(weather.readings.take(6)) }
+                }
+            }
+        }
+        item { SectionTitle("Favorites", if (favorites.isEmpty()) "Tap the star on a device to pin it here" else "Your everyday controls") }
+        if (favorites.isEmpty()) item { EmptyPanel(Icons.Outlined.StarOutline, "Nothing pinned yet") } else items(favorites, key = { it.key }) { DeviceCard(it, vm) }
+        item { SectionTitle("Recently seen", "Live updates from ${state.devices.size} discovered devices") }
+        items(state.devices.sortedByDescending { it.lastSeen }.take(5), key = { "recent:${it.key}" }) { DeviceCard(it, vm) }
+    }
+}
+
+@Composable private fun ClimateScreen(state: AppState, vm: MainViewModel) {
+    val devices = state.devices.filter { it.kind in setOf(DeviceKind.GOVEE, DeviceKind.WEATHER, DeviceKind.SENSOR) || (it.kind == DeviceKind.MATTER && it.readings.any { r -> r.label in setOf("Temperature", "Humidity", "Air quality") }) }
+    LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        if (state.forecasts.isNotEmpty()) { item { SectionTitle("Forecast", "Automatically discovered") }; item { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) { state.forecasts.take(3).forEach { f -> ElevatedCard(Modifier.weight(1f)) { Column(Modifier.padding(12.dp)) { Text(f.date.ifBlank { "Day ${f.index + 1}" }, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold); Spacer(Modifier.height(8.dp)); Text("${f.high}° / ${f.low}°", style = MaterialTheme.typography.titleMedium); if (f.sunrise.isNotBlank()) Text("↑ ${f.sunrise}", style = MaterialTheme.typography.labelSmall) } } } } }
+        }
+        if (devices.isEmpty()) item { EmptyPanel(Icons.Outlined.Thermostat, "Waiting for climate data") }
+        items(devices, key = { it.key }) { DeviceCard(it, vm) }
+    }
+}
+
+@Composable private fun DeviceList(devices: List<SmartDevice>, empty: String, vm: MainViewModel) {
+    LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        if (devices.isEmpty()) item { EmptyPanel(Icons.Outlined.SensorsOff, empty) }
+        items(devices, key = { it.key }) { DeviceCard(it, vm) }
+    }
+}
+
+@Composable private fun DeviceCard(device: SmartDevice, vm: MainViewModel) {
+    var expanded by remember { mutableStateOf(false) }; var edit by remember { mutableStateOf(false) }
+    ElevatedCard(onClick = { expanded = !expanded }, modifier = Modifier.fillMaxWidth(), colors = CardDefaults.elevatedCardColors(containerColor = if (!device.online) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .65f) else MaterialTheme.colorScheme.surface)) {
+        Column(Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Surface(shape = RoundedCornerShape(14.dp), color = kindColor(device.kind).copy(alpha = .14f), modifier = Modifier.size(48.dp)) { Box(contentAlignment = Alignment.Center) { Icon(kindIcon(device.kind), null, tint = kindColor(device.kind)) } }
+                Spacer(Modifier.width(12.dp)); Column(Modifier.weight(1f)) { Text(device.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold); Text(listOf(device.room, freshness(device)).filter(String::isNotBlank).joinToString(" • "), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                IconButton({ vm.favorite(device) }) { Icon(if (device.favorite) Icons.Default.Star else Icons.Outlined.StarOutline, "Favorite", tint = if (device.favorite) MaterialTheme.colorScheme.tertiary else LocalContentColor.current) }
+                device.power?.let { checked -> Switch(checked = checked, onCheckedChange = { vm.setPower(device, it) }) }
+            }
+            if (device.readings.isNotEmpty()) { Spacer(Modifier.height(12.dp)); ReadingGrid(device.readings.take(6)) }
+            if (!device.supported) { Spacer(Modifier.height(10.dp)); Text("Identified, but this model's measurements aren't decoded yet.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            AnimatedVisibility(expanded) {
+                Column { HorizontalDivider(Modifier.padding(vertical = 12.dp)); device.level?.let { current -> Text(if (device.kind == DeviceKind.WLED) "Brightness" else "Fan speed", style = MaterialTheme.typography.labelLarge); var slider by remember(current) { mutableFloatStateOf(current.toFloat()) }; Slider(slider, { slider = it }, onValueChangeFinished = { vm.setLevel(device, slider.toInt()) }, valueRange = if (device.kind == DeviceKind.WLED) 0f..255f else 0f..100f) }; Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { if (device.kind == DeviceKind.WAKE) Button({ vm.wake(device) }) { Icon(Icons.Default.PowerSettingsNew, null); Spacer(Modifier.width(6.dp)); Text("Wake") }; TextButton({ edit = true }) { Icon(Icons.Outlined.Edit, null); Spacer(Modifier.width(4.dp)); Text("Name & room") } } }
+            }
+        }
+    }
+    if (edit) EditDialog(device, { edit = false }) { name, room -> vm.alias(device, name, room); edit = false }
+}
+
+@Composable private fun ReadingGrid(readings: List<Reading>) { readings.chunked(3).forEach { row -> Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) { row.forEach { r -> Column(Modifier.weight(1f).padding(vertical = 4.dp)) { Text(r.value, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis); Text(r.label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis) } }; repeat(3 - row.size) { Spacer(Modifier.weight(1f)) } } } }
+
+@Composable private fun SettingsScreen(state: AppState, vm: MainViewModel) {
+    var broker by remember(state.brokerUri) { mutableStateOf(state.brokerUri) }
+    LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        item { SectionTitle("Broker", "Local network connection") }
+        item { ElevatedCard(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) { OutlinedTextField(broker, { broker = it }, label = { Text("MQTT URI") }, singleLine = true, modifier = Modifier.fillMaxWidth()); Button({ vm.broker(broker) }, enabled = broker != state.brokerUri) { Text("Save & reconnect") }; Text("Anonymous connection • QoS 0 • retained snapshot", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) } } }
+        item { SectionTitle("Diagnostics", "Safe connection details") }
+        item { ElevatedCard(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { DiagnosticRow("Status", connectionText(state)); DiagnosticRow("Devices", state.devices.size.toString()); DiagnosticRow("Recognized messages", state.recognizedTopics.toString()); DiagnosticRow("Ignored messages", state.ignoredTopics.toString()); state.lastError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) } } } }
+        item { Text("Bloodsucker 0.1 • Payloads and raw topics stay out of the consumer interface.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+    }
+}
+
+@Composable private fun EditDialog(d: SmartDevice, dismiss: () -> Unit, save: (String, String) -> Unit) { var name by remember { mutableStateOf(d.name) }; var room by remember { mutableStateOf(d.room) }; AlertDialog(onDismissRequest = dismiss, title = { Text("Personalize device") }, text = { Column(verticalArrangement = Arrangement.spacedBy(10.dp)) { OutlinedTextField(name, { name = it }, label = { Text("Name") }, singleLine = true); OutlinedTextField(room, { room = it }, label = { Text("Room") }, singleLine = true) } }, confirmButton = { TextButton({ save(name, room) }) { Text("Save") } }, dismissButton = { TextButton(dismiss) { Text("Cancel") } }) }
+@Composable private fun SectionTitle(title: String, subtitle: String) { Column { Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold); Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
+@Composable private fun EmptyPanel(icon: ImageVector, text: String) { Box(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .5f), RoundedCornerShape(20.dp)).padding(32.dp), contentAlignment = Alignment.Center) { Column(horizontalAlignment = Alignment.CenterHorizontally) { Icon(icon, null, Modifier.size(40.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant); Spacer(Modifier.height(10.dp)); Text(text, color = MaterialTheme.colorScheme.onSurfaceVariant) } } }
+@Composable private fun DiagnosticRow(label: String, value: String) { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant); Text(value, fontWeight = FontWeight.SemiBold) } }
+private fun connectionText(s: AppState) = when (s.connection) { ConnectionState.CONNECTED -> "Connected to ${s.brokerUri.removePrefix("tcp://").removePrefix("ssl://")}"; ConnectionState.CONNECTING -> "Connecting…"; ConnectionState.DISCONNECTED -> "Offline" }
+private fun connectionColor(s: ConnectionState) = when (s) { ConnectionState.CONNECTED -> Color(0xFF238636); ConnectionState.CONNECTING -> Color(0xFFE09F00); ConnectionState.DISCONNECTED -> Color(0xFFC53D3D) }
+private fun freshness(d: SmartDevice): String { val mins = (System.currentTimeMillis() - d.lastSeen) / 60_000; return when { !d.online -> "Offline"; mins < 1 -> "Just now"; mins < 60 -> "$mins min ago"; else -> "Stale" } }
+private fun kindIcon(k: DeviceKind) = when (k) { DeviceKind.WLED -> Icons.Outlined.Lightbulb; DeviceKind.GOVEE -> Icons.Outlined.Thermostat; DeviceKind.MATTER -> Icons.Outlined.Air; DeviceKind.SWITCH -> Icons.Outlined.ToggleOn; DeviceKind.WEATHER -> Icons.Outlined.WbSunny; DeviceKind.SENSOR -> Icons.Outlined.Sensors; DeviceKind.WAKE -> Icons.Outlined.Computer }
+private fun kindColor(k: DeviceKind) = when (k) { DeviceKind.WLED -> Color(0xFFFF8A34); DeviceKind.GOVEE -> Color(0xFF0D9488); DeviceKind.MATTER -> Color(0xFF7C3AED); DeviceKind.SWITCH -> Color(0xFF2563EB); DeviceKind.WEATHER -> Color(0xFFE9A700); DeviceKind.SENSOR -> Color(0xFF0891B2); DeviceKind.WAKE -> Color(0xFF475569) }
+
+@Composable private fun BloodsuckerTheme(content: @Composable () -> Unit) { val dark = androidx.compose.foundation.isSystemInDarkTheme(); MaterialTheme(colorScheme = if (dark) darkColorScheme(primary = Color(0xFFFFB77B), secondary = Color(0xFF6DD6CA)) else lightColorScheme(primary = Color(0xFF8B3F00), secondary = Color(0xFF006B62), background = Color(0xFFFFF8F4)), typography = Typography(), content = content) }
