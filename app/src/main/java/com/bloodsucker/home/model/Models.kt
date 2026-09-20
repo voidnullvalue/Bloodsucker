@@ -4,6 +4,12 @@ enum class ConnectionState { DISCONNECTED, CONNECTING, CONNECTED }
 enum class DeviceKind { WLED, GOVEE, MATTER, SWITCH, WEATHER, SENSOR, WAKE }
 
 data class Reading(val label: String, val value: String)
+data class NamedValue(val value: Int, val name: String)
+data class WledControls(
+    val effects: List<NamedValue> = emptyList(),
+    val palettes: List<NamedValue> = emptyList(),
+    val presets: List<NamedValue> = emptyList()
+)
 
 data class SmartDevice(
     val key: String,
@@ -18,7 +24,8 @@ data class SmartDevice(
     val color: String? = null,
     val favorite: Boolean = false,
     val supported: Boolean = true,
-    val detail: String = ""
+    val detail: String = "",
+    val wledControls: WledControls? = null
 )
 
 data class Forecast(val index: Int, val date: String = "", val high: String = "", val low: String = "", val sunrise: String = "", val sunset: String = "")

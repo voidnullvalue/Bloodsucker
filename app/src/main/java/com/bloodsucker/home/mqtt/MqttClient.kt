@@ -46,10 +46,12 @@ class MqttClient(
 
     fun disconnect() { running = false; worker?.cancel(); worker = null; closeSocket(); onState(false, null) }
 
-    @Synchronized fun publish(topic: String, payload: String) {
+    @Synchronized fun publish(topic: String, payload: String): Boolean = runCatching {
+        if (output == null) return@runCatching false
         val topicBytes = topic.toByteArray(); val body = ByteArrayOutputStream().also { b -> writeUtf(b, topicBytes); b.write(payload.toByteArray()) }.toByteArray()
         writePacket(0x30, body)
-    }
+        true
+    }.getOrElse { false }
 
     private fun sendConnect(clientId: String) {
         val body = ByteArrayOutputStream()

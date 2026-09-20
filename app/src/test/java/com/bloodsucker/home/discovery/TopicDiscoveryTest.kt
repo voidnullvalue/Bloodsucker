@@ -51,4 +51,13 @@ class TopicDiscoveryTest {
         assertEquals(8, r.forecast!!.index)
         assertEquals("81", r.forecast.high)
     }
+
+    @Test fun wledStateExposesPrettyControlStateFields() {
+        val xml = "<vs><ds>Kitchen glow</ds><fx>42</fx><fp>7</fp><ps>3</ps><sx>120</sx><ix>200</ix></vs>"
+        val d = TopicDiscovery.parse("wled/abcdef/v", xml.toByteArray()).device!!
+        assertEquals("Kitchen glow", d.name)
+        assertEquals("42", d.readings.first { it.label == "Effect" }.value)
+        assertEquals("7", d.readings.first { it.label == "Palette" }.value)
+        assertEquals("3", d.readings.first { it.label == "Preset" }.value)
+    }
 }

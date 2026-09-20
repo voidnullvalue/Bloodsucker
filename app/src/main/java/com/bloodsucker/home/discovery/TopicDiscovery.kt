@@ -65,7 +65,7 @@ object TopicDiscovery {
             val raw = obj.opt("value") ?: return DiscoveryResult(recognized = true)
             val label = obj.optString("attribute").takeIf { it.isNotBlank() } ?: matterLabel(cluster, attr)
             val value = matterValue(cluster, attr, raw)
-            return DiscoveryResult(SmartDevice("matter:$node:$endpoint", DeviceKind.MATTER, if (node == 1 && endpoint == 1) "Air purifier" else "Matter device $node", lastSeen = now, readings = listOf(Reading(label, value)), power = if (cluster == 6 && attr == 0) asBoolean(raw) else null, level = if (cluster == 514 && attr == 2) raw.toString().toIntOrNull() else null), recognized = true)
+            return DiscoveryResult(SmartDevice("matter:$node:$endpoint", DeviceKind.MATTER, if (node == 1 && endpoint == 1) "Air purifier" else "Matter device $node", lastSeen = now, readings = listOf(Reading(label, value)), power = if (cluster == 6 && attr == 0) asBoolean(raw) else null, level = if (cluster == 514 && attr in setOf(2, 3)) raw.toString().toIntOrNull() else null), recognized = true)
         }
         if (topic.startsWith("ble/")) parseGovee(topic, payload, now)?.let { return DiscoveryResult(it, recognized = true) }
         val leaf = topic.substringAfterLast('/').lowercase()

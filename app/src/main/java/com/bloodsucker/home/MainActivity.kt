@@ -41,6 +41,8 @@ class MainViewModel(private val repository: HomeRepository) : androidx.lifecycle
     fun setPower(d: SmartDevice, on: Boolean) = repository.setPower(d, on)
     fun setLevel(d: SmartDevice, value: Int) = repository.setLevel(d, value)
     fun wake(d: SmartDevice) = repository.wake(d)
+    fun wledApi(d: SmartDevice, prefix: String, value: Int) = repository.wledApi(d, prefix, value)
+    fun wledColor(d: SmartDevice, color: String) = repository.setWledColor(d, color)
     fun favorite(d: SmartDevice) = repository.toggleFavorite(d.key)
     fun alias(d: SmartDevice, name: String, room: String) = repository.setAlias(d.key, name, room)
     fun broker(uri: String) = repository.setBroker(uri)
@@ -124,12 +126,82 @@ private enum class Tab(val title: String, val icon: ImageVector) { HOME("Home", 
             if (device.readings.isNotEmpty()) { Spacer(Modifier.height(12.dp)); ReadingGrid(device.readings.take(6)) }
             if (!device.supported) { Spacer(Modifier.height(10.dp)); Text("Identified, but this model's measurements aren't decoded yet.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             AnimatedVisibility(expanded) {
-                Column { HorizontalDivider(Modifier.padding(vertical = 12.dp)); device.level?.let { current -> Text(if (device.kind == DeviceKind.WLED) "Brightness" else "Fan speed", style = MaterialTheme.typography.labelLarge); var slider by remember(current) { mutableFloatStateOf(current.toFloat()) }; Slider(slider, { slider = it }, onValueChangeFinished = { vm.setLevel(device, slider.toInt()) }, valueRange = if (device.kind == DeviceKind.WLED) 0f..255f else 0f..100f) }; Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { if (device.kind == DeviceKind.WAKE) Button({ vm.wake(device) }) { Icon(Icons.Default.PowerSettingsNew, null); Spacer(Modifier.width(6.dp)); Text("Wake") }; TextButton({ edit = true }) { Icon(Icons.Outlined.Edit, null); Spacer(Modifier.width(4.dp)); Text("Name & room") } } }
+                Column {
+                    HorizontalDivider(Modifier.padding(vertical = 12.dp))
+                    if (device.kind == DeviceKind.WLED) WledPanel(device, vm)
+                    else device.level?.let { current ->
+                        Text("Fan speed", style = MaterialTheme.typography.labelLarge)
+                        var slider by remember(current) { mutableFloatStateOf(current.toFloat()) }
+                        Slider(slider, { slider = it }, onValueChangeFinished = { vm.setLevel(device, slider.toInt()) }, valueRange = 0f..100f)
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (device.kind == DeviceKind.WAKE) Button({ vm.wake(device) }) { Icon(Icons.Default.PowerSettingsNew, null); Spacer(Modifier.width(6.dp)); Text("Wake") }
+                        TextButton({ edit = true }) { Icon(Icons.Outlined.Edit, null); Spacer(Modifier.width(4.dp)); Text("Name & room") }
+                    }
+                }
             }
         }
     }
     if (edit) EditDialog(device, { edit = false }) { name, room -> vm.alias(device, name, room); edit = false }
 }
+
+@Composable private fun WledPanel(device: SmartDevice, vm: MainViewModel) {
+    Text("Power", style = MaterialTheme.typography.labelLarge)
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        FilledTonalButton({ vm.setPower(device, true) }) { Text("On") }
+        FilledTonalButton({ vm.setPower(device, false) }) { Text("Off") }
+    }
+    Spacer(Modifier.height(8.dp))
+    val brightness = device.level ?: 255
+    var level by remember(brightness) { mutableFloatStateOf(brightness.toFloat()) }
+    Text("Brightness ${level.toInt()}", style = MaterialTheme.typography.labelLarge)
+    Slider(level, { level = it }, onValueChangeFinished = { vm.setLevel(device, level.toInt()) }, valueRange = 0f..255f)
+    var color by remember(device.color) { mutableStateOf(device.color?.let { "#${it.takeLast(6)}" } ?: "#FFFFFF") }
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedTextField(color, { color = it.take(7) }, label = { Text("RGB color") }, singleLine = true, modifier = Modifier.weight(1f))
+        Button({ vm.wledColor(device, color) }) { Text("Apply") }
+    }
+    val controls = device.wledControls
+    if (controls == null) Text("Loading effect names…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    else {
+        val currentEffect = readingInt(device, "Effect")
+        val currentPalette = readingInt(device, "Palette")
+        val currentPreset = readingInt(device, "Preset")
+        PrettyPicker("Effect", controls.effects, currentEffect) { vm.wledApi(device, "FX", it) }
+        PrettyPicker("Palette", controls.palettes, currentPalette) { vm.wledApi(device, "FP", it) }
+        PrettyPicker("Preset", controls.presets, currentPreset) { vm.wledApi(device, "PL", it) }
+    }
+    WledSlider("Speed", readingInt(device, "Speed") ?: 128) { vm.wledApi(device, "SX", it) }
+    WledSlider("Intensity", readingInt(device, "Intensity") ?: 128) { vm.wledApi(device, "IX", it) }
+    var transition by remember { mutableStateOf("0") }
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedTextField(transition, { transition = it.filter(Char::isDigit).take(5) }, label = { Text("Transition ms") }, singleLine = true, modifier = Modifier.weight(1f))
+        Button({ transition.toIntOrNull()?.let { vm.wledApi(device, "TT", it) } }) { Text("Apply") }
+    }
+}
+
+@Composable private fun WledSlider(label: String, initial: Int, send: (Int) -> Unit) {
+    var value by remember(initial) { mutableFloatStateOf(initial.toFloat()) }
+    Text("$label ${value.toInt()}", style = MaterialTheme.typography.labelLarge)
+    Slider(value, { value = it }, onValueChangeFinished = { send(value.toInt()) }, valueRange = 0f..255f)
+}
+
+@Composable private fun PrettyPicker(label: String, options: List<NamedValue>, current: Int?, send: (Int) -> Unit) {
+    if (options.isEmpty()) return
+    var open by remember { mutableStateOf(false) }
+    val selected = options.firstOrNull { it.value == current }
+    Box {
+        OutlinedButton({ open = true }, modifier = Modifier.fillMaxWidth()) {
+            Text("$label: ${selected?.name ?: "Choose…"}", modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Icon(Icons.Default.ArrowDropDown, null)
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            options.forEach { item -> DropdownMenuItem(text = { Text(item.name) }, onClick = { open = false; send(item.value) }) }
+        }
+    }
+}
+
+private fun readingInt(device: SmartDevice, label: String) = device.readings.firstOrNull { it.label == label }?.value?.toIntOrNull()
 
 @Composable private fun ReadingGrid(readings: List<Reading>) { readings.chunked(3).forEach { row -> Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) { row.forEach { r -> Column(Modifier.weight(1f).padding(vertical = 4.dp)) { Text(r.value, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis); Text(r.label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis) } }; repeat(3 - row.size) { Spacer(Modifier.weight(1f)) } } } }
 

@@ -16,6 +16,7 @@ class HomeRepository(context: Context) {
     val state: StateFlow<AppState> = mutable.asStateFlow()
     private val clientId = prefs.getString("clientId", null) ?: "bloodsucker-android-${UUID.randomUUID()}".also { prefs.edit().putString("clientId", it).apply() }
     private val client = MqttClient(scope, ::connectionChanged, ::messageReceived)
+    private val metadataLoading = mutableSetOf<String>()
 
     init { connect() }
     fun connect() { mutable.update { it.copy(connection = ConnectionState.CONNECTING, lastError = null) }; client.connect(state.value.brokerUri, clientId) }
@@ -41,6 +42,10 @@ class HomeRepository(context: Context) {
         }
     }
     fun wake(device: SmartDevice) = if (device.kind == DeviceKind.WAKE) publishValidated("wol/${device.key.substringAfter(':')}/", "wake") else false
+    fun setWledColor(device: SmartDevice, color: String): Boolean {
+        val normalized = color.trim().uppercase().let { if (it.startsWith('#')) it else "#$it" }
+        return if (device.kind == DeviceKind.WLED && normalized.matches(Regex("#[0-9A-F]{6}"))) publishValidated("wled/${device.key.substringAfter(':')}/col", normalized) else false
+    }
     fun wledApi(device: SmartDevice, prefix: String, value: Int): Boolean {
         if (device.kind != DeviceKind.WLED || prefix !in setOf("FX", "FP", "SX", "IX", "PL", "TT")) return false
         val range = if (prefix == "PL") 1..250 else if (prefix == "TT") 0..65000 else 0..255
@@ -52,7 +57,7 @@ class HomeRepository(context: Context) {
     }
     private fun publishValidated(topic: String, payload: String): Boolean {
         if (state.value.connection != ConnectionState.CONNECTED || payload.length > 4096) return false
-        client.publish(topic, payload); return true
+        return runCatching { client.publish(topic, payload) }.getOrDefault(false)
     }
     private fun connectionChanged(connected: Boolean, error: String?) { mutable.update { it.copy(connection = if (connected) ConnectionState.CONNECTED else if (error == null) ConnectionState.CONNECTING else ConnectionState.DISCONNECTED, lastError = error) } }
     private fun messageReceived(topic: String, bytes: ByteArray, retained: Boolean) {
@@ -67,12 +72,26 @@ class HomeRepository(context: Context) {
                 val fav = incoming.key in (prefs.getStringSet("favorites", emptySet()) ?: emptySet())
                 val merged = merge(old, incoming).copy(name = alias?.takeIf(String::isNotBlank) ?: merge(old, incoming).name, room = room, favorite = fav)
                 devices = devices.filterNot { it.key == incoming.key } + merged
+                if (incoming.kind == DeviceKind.WLED) loadWledMetadata(incoming.key.substringAfter(':'))
             }
             var forecasts = current.forecasts
             result.forecast?.let { f -> val old = forecasts.firstOrNull { it.index == f.index }; val merged = Forecast(f.index, f.date.ifBlank { old?.date.orEmpty() }, f.high.ifBlank { old?.high.orEmpty() }, f.low.ifBlank { old?.low.orEmpty() }, f.sunrise.ifBlank { old?.sunrise.orEmpty() }, f.sunset.ifBlank { old?.sunset.orEmpty() }); forecasts = (forecasts.filterNot { it.index == f.index } + merged).sortedBy { it.index } }
             current.copy(devices = devices.sortedWith(compareByDescending<SmartDevice> { it.favorite }.thenBy { it.name }), forecasts = forecasts, recognizedTopics = current.recognizedTopics + 1)
         }
     }
-    private fun merge(old: SmartDevice?, new: SmartDevice): SmartDevice = if (old == null) new else new.copy(name = if (new.name.startsWith("WLED ") && !old.name.startsWith("WLED ")) old.name else new.name, readings = (old.readings.associateBy { it.label } + new.readings.associateBy { it.label }).values.toList(), power = new.power ?: old.power, level = new.level ?: old.level, color = new.color ?: old.color, online = if (new.kind == DeviceKind.WLED && new.detail.isNotBlank()) old.online else new.online)
+    private fun loadWledMetadata(id: String) {
+        synchronized(metadataLoading) { if (!metadataLoading.add(id)) return }
+        scope.launch(Dispatchers.IO) {
+            val meta = WledMetadataClient.fetch(id.lowercase())
+            mutable.update { state -> state.copy(devices = state.devices.map { d ->
+                if (d.key != "wled:${id.uppercase()}") d else d.copy(
+                    name = prefs.getString("alias:${d.key}", null)?.takeIf(String::isNotBlank) ?: meta.name.ifBlank { d.name },
+                    wledControls = meta.controls.takeIf { it.effects.isNotEmpty() || it.palettes.isNotEmpty() || it.presets.isNotEmpty() }
+                )
+            }) }
+            synchronized(metadataLoading) { metadataLoading.remove(id) }
+        }
+    }
+    private fun merge(old: SmartDevice?, new: SmartDevice): SmartDevice = if (old == null) new else new.copy(name = if (new.name.startsWith("WLED ") && !old.name.startsWith("WLED ")) old.name else new.name, readings = (old.readings.associateBy { it.label } + new.readings.associateBy { it.label }).values.toList(), power = new.power ?: old.power, level = new.level ?: old.level, color = new.color ?: old.color, online = if (new.kind == DeviceKind.WLED && new.detail.isNotBlank()) old.online else new.online, wledControls = old.wledControls)
     companion object { const val DEFAULT_BROKER = "tcp://192.168.88.14:1883" }
 }
