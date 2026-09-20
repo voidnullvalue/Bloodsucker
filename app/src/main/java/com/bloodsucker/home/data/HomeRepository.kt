@@ -27,7 +27,7 @@ class HomeRepository(context: Context) {
 
     fun setPower(device: SmartDevice, on: Boolean): Boolean {
         val sent = when (device.kind) {
-        DeviceKind.WLED -> publishValidated("wled/${device.key.substringAfter(':')}", if (on) "ON" else "OFF")
+        DeviceKind.WLED -> publishValidated(wledTopic(device), if (on) "ON" else "OFF")
         DeviceKind.SWITCH -> publishValidated("gateway/device/${device.key.substringAfter(':')}/switch/set", if (on) "on" else "off")
         DeviceKind.MATTER -> matterCommand(device, if (on) 1 else 0)
         else -> false
@@ -42,7 +42,7 @@ class HomeRepository(context: Context) {
     }
     fun setLevel(device: SmartDevice, level: Int): Boolean {
         return when (device.kind) {
-            DeviceKind.WLED -> publishValidated("wled/${device.key.substringAfter(':')}", level.coerceIn(0, 255).toString())
+            DeviceKind.WLED -> publishValidated(wledTopic(device), level.coerceIn(0, 255).toString())
             DeviceKind.MATTER -> {
                 val (node, endpoint) = device.key.removePrefix("matter:").split(':').map(String::toInt)
                 if (node != 1 || endpoint != 1 || level !in 0..100) false else publishValidated("matter/rpc/request", JSONObject().put("id", "android-${UUID.randomUUID()}").put("operation", "write").put("node_id", node).put("endpoint", endpoint).put("cluster", 514).put("attribute", 2).put("value", level).toString())
@@ -53,13 +53,14 @@ class HomeRepository(context: Context) {
     fun wake(device: SmartDevice) = if (device.kind == DeviceKind.WAKE) publishValidated("wol/${device.key.substringAfter(':')}/", "wake") else false
     fun setWledColor(device: SmartDevice, color: String): Boolean {
         val normalized = color.trim().uppercase().let { if (it.startsWith('#')) it else "#$it" }
-        return if (device.kind == DeviceKind.WLED && normalized.matches(Regex("#[0-9A-F]{6}"))) publishValidated("wled/${device.key.substringAfter(':')}/col", normalized) else false
+        return if (device.kind == DeviceKind.WLED && normalized.matches(Regex("#[0-9A-F]{6}"))) publishValidated("${wledTopic(device)}/col", normalized) else false
     }
     fun wledApi(device: SmartDevice, prefix: String, value: Int): Boolean {
         if (device.kind != DeviceKind.WLED || prefix !in setOf("FX", "FP", "SX", "IX", "PL", "TT")) return false
         val range = if (prefix == "PL") 1..250 else if (prefix == "TT") 0..65000 else 0..255
-        return value.takeIf { it in range }?.let { publishValidated("wled/${device.key.substringAfter(':')}/api", "$prefix=$it") } ?: false
+        return value.takeIf { it in range }?.let { publishValidated("${wledTopic(device)}/api", "$prefix=$it") } ?: false
     }
+    private fun wledTopic(device: SmartDevice) = wledMqttTopic(device.key)
     private fun matterCommand(device: SmartDevice, command: Int): Boolean {
         val parts = device.key.removePrefix("matter:").split(':').mapNotNull(String::toIntOrNull); if (parts != listOf(1, 1)) return false
         return publishValidated("matter/rpc/request", JSONObject().put("id", "android-${UUID.randomUUID()}").put("operation", "command").put("node_id", 1).put("endpoint", 1).put("cluster", 6).put("command", command).toString())
@@ -104,3 +105,5 @@ class HomeRepository(context: Context) {
     private fun merge(old: SmartDevice?, new: SmartDevice): SmartDevice = if (old == null) new else new.copy(name = if (new.name.startsWith("WLED ") && !old.name.startsWith("WLED ")) old.name else new.name, readings = (old.readings.associateBy { it.label } + new.readings.associateBy { it.label }).values.toList(), power = new.power ?: old.power, level = new.level ?: old.level, color = new.color ?: old.color, online = if (new.kind == DeviceKind.WLED && new.detail.isNotBlank()) old.online else new.online, wledControls = old.wledControls)
     companion object { const val DEFAULT_BROKER = "tcp://192.168.88.14:1883" }
 }
+
+internal fun wledMqttTopic(deviceKey: String) = "wled/${deviceKey.substringAfter(':').lowercase()}"
