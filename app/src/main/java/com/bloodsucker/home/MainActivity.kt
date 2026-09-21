@@ -45,6 +45,7 @@ class MainViewModel(private val repository: HomeRepository) : androidx.lifecycle
     fun wake(d: SmartDevice) = repository.wake(d)
     fun wledApi(d: SmartDevice, prefix: String, value: Int) = repository.wledApi(d, prefix, value)
     fun wledColor(d: SmartDevice, color: String) = repository.setWledColor(d, color)
+    fun generic(d: SmartDevice, value: String) = repository.setGeneric(d, value)
     fun favorite(d: SmartDevice) = repository.toggleFavorite(d.key)
     fun alias(d: SmartDevice, name: String, room: String) = repository.setAlias(d.key, name, room)
     fun broker(uri: String) = repository.setBroker(uri)
@@ -72,7 +73,7 @@ private enum class Tab(val title: String, val icon: ImageVector) { HOME("Home", 
                 Tab.HOME -> HomeScreen(state, vm)
                 Tab.LIGHTS -> DeviceList(state.devices.filter { it.kind == DeviceKind.WLED }, "No lights yet", vm)
                 Tab.CLIMATE -> ClimateScreen(state, vm)
-                Tab.DEVICES -> DeviceList(state.devices.filter { it.kind in setOf(DeviceKind.SWITCH, DeviceKind.MATTER, DeviceKind.WAKE) }, "No controllable devices yet", vm)
+                Tab.DEVICES -> DeviceList(state.devices.filter { it.kind in setOf(DeviceKind.SWITCH, DeviceKind.MATTER, DeviceKind.WAKE, DeviceKind.CONTROL) }, "No controllable devices yet", vm)
                 Tab.SETTINGS -> SettingsScreen(state, vm)
             }
         }
@@ -125,7 +126,7 @@ private enum class Tab(val title: String, val icon: ImageVector) { HOME("Home", 
                     Spacer(Modifier.width(12.dp)); Column { Text(device.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold); Text(listOf(device.room, freshness(device)).filter(String::isNotBlank).joinToString(" • "), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 }
                 IconButton({ vm.favorite(device) }) { Icon(if (device.favorite) Icons.Default.Star else Icons.Outlined.StarOutline, "Favorite", tint = if (device.favorite) MaterialTheme.colorScheme.tertiary else LocalContentColor.current) }
-                if (device.kind != DeviceKind.MATTER) device.power?.let { checked ->
+                if (device.kind !in setOf(DeviceKind.MATTER, DeviceKind.CONTROL)) device.power?.let { checked ->
                     Switch(checked = checked, onCheckedChange = { vm.setPower(device, it) })
                 }
             }
@@ -143,6 +144,10 @@ private enum class Tab(val title: String, val icon: ImageVector) { HOME("Home", 
                     Spacer(Modifier.width(8.dp))
                     Text(if (device.power) "Turn purifier off" else "Turn purifier on")
                 }
+            }
+            if (device.kind == DeviceKind.CONTROL) {
+                Spacer(Modifier.height(12.dp))
+                GenericControlPanel(device, vm)
             }
             if (!device.supported) { Spacer(Modifier.height(10.dp)); Text("Identified, but this model's measurements aren't decoded yet.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             AnimatedVisibility(expanded) {
@@ -163,6 +168,54 @@ private enum class Tab(val title: String, val icon: ImageVector) { HOME("Home", 
         }
     }
     if (edit) EditDialog(device, { edit = false }) { name, room -> vm.alias(device, name, room); edit = false }
+}
+
+@Composable private fun GenericControlPanel(device: SmartDevice, vm: MainViewModel) {
+    when {
+        device.controlType == "switch" || device.controlType == "scroll-power" -> {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilledTonalButton({ vm.generic(device, "on") }, Modifier.weight(1f)) { Text("On") }
+                FilledTonalButton({ vm.generic(device, "off") }, Modifier.weight(1f)) { Text("Off") }
+            }
+        }
+        device.controlType == "light" -> {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilledTonalButton({ vm.generic(device, "on") }, Modifier.weight(1f)) { Text("On") }
+                FilledTonalButton({ vm.generic(device, "off") }, Modifier.weight(1f)) { Text("Off") }
+            }
+            var brightness by remember(device.level) { mutableFloatStateOf((device.level ?: 255).toFloat()) }
+            Text("Brightness ${brightness.toInt()}", style = MaterialTheme.typography.labelLarge)
+            Slider(brightness, { brightness = it }, onValueChangeFinished = { vm.generic(device, brightness.toInt().toString()) }, valueRange = 0f..255f)
+        }
+        device.controlType.contains("brightness") || device.controlType.contains("speed") -> {
+            val max = if (device.controlType.startsWith("flex-")) 100f else 255f
+            var value by remember(device.numericValue) { mutableFloatStateOf((device.numericValue ?: 0.0).toFloat().coerceIn(0f, max)) }
+            Text("Value ${value.toInt()}", style = MaterialTheme.typography.labelLarge)
+            Slider(value, { value = it }, onValueChangeFinished = { vm.generic(device, value.toInt().toString()) }, valueRange = 0f..max)
+        }
+        device.controlType == "number" -> {
+            var value by remember(device.numericValue) { mutableStateOf(device.numericValue?.toString() ?: "") }
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(value, { value = it.filter { c -> c.isDigit() || c in ".-" } }, label = { Text("Value") }, singleLine = true, modifier = Modifier.weight(1f))
+                Button({ value.toDoubleOrNull()?.let { vm.generic(device, value) } }) { Text("Apply") }
+            }
+        }
+        device.controlType.contains("color") -> {
+            var value by remember(device.color) { mutableStateOf(device.color ?: "#FFFFFF") }
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(value, { value = it.take(7) }, label = { Text("RGB color") }, singleLine = true, modifier = Modifier.weight(1f))
+                Button({ if (value.matches(Regex("#[0-9a-fA-F]{6}"))) vm.generic(device, value) }) { Text("Apply") }
+            }
+        }
+        device.controlType.contains("text") -> {
+            var value by remember { mutableStateOf("") }
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(value, { value = it.take(240) }, label = { Text("Text to display") }, modifier = Modifier.weight(1f))
+                Button({ if (value.isNotBlank()) vm.generic(device, value) }) { Text("Send") }
+            }
+        }
+        else -> Text("Control type: ${device.controlType}", style = MaterialTheme.typography.bodySmall)
+    }
 }
 
 @Composable private fun WledPanel(device: SmartDevice, vm: MainViewModel) {
@@ -243,7 +296,7 @@ private fun readingInt(device: SmartDevice, label: String) = device.readings.fir
 private fun connectionText(s: AppState) = when (s.connection) { ConnectionState.CONNECTED -> "Connected to ${s.brokerUri.removePrefix("tcp://").removePrefix("ssl://")}"; ConnectionState.CONNECTING -> "Connecting…"; ConnectionState.DISCONNECTED -> "Offline" }
 private fun connectionColor(s: ConnectionState) = when (s) { ConnectionState.CONNECTED -> Color(0xFF238636); ConnectionState.CONNECTING -> Color(0xFFE09F00); ConnectionState.DISCONNECTED -> Color(0xFFC53D3D) }
 private fun freshness(d: SmartDevice): String { val mins = (System.currentTimeMillis() - d.lastSeen) / 60_000; return when { !d.online -> "Offline"; mins < 1 -> "Just now"; mins < 60 -> "$mins min ago"; else -> "Stale" } }
-private fun kindIcon(k: DeviceKind) = when (k) { DeviceKind.WLED -> Icons.Outlined.Lightbulb; DeviceKind.GOVEE -> Icons.Outlined.Thermostat; DeviceKind.MATTER -> Icons.Outlined.Air; DeviceKind.SWITCH -> Icons.Outlined.ToggleOn; DeviceKind.WEATHER -> Icons.Outlined.WbSunny; DeviceKind.SENSOR -> Icons.Outlined.Sensors; DeviceKind.WAKE -> Icons.Outlined.Computer }
-private fun kindColor(k: DeviceKind) = when (k) { DeviceKind.WLED -> Color(0xFFFF8A34); DeviceKind.GOVEE -> Color(0xFF0D9488); DeviceKind.MATTER -> Color(0xFF7C3AED); DeviceKind.SWITCH -> Color(0xFF2563EB); DeviceKind.WEATHER -> Color(0xFFE9A700); DeviceKind.SENSOR -> Color(0xFF0891B2); DeviceKind.WAKE -> Color(0xFF475569) }
+private fun kindIcon(k: DeviceKind) = when (k) { DeviceKind.WLED -> Icons.Outlined.Lightbulb; DeviceKind.GOVEE -> Icons.Outlined.Thermostat; DeviceKind.MATTER -> Icons.Outlined.Air; DeviceKind.SWITCH -> Icons.Outlined.ToggleOn; DeviceKind.WEATHER -> Icons.Outlined.WbSunny; DeviceKind.SENSOR -> Icons.Outlined.Sensors; DeviceKind.WAKE -> Icons.Outlined.Computer; DeviceKind.CONTROL -> Icons.Outlined.Tune }
+private fun kindColor(k: DeviceKind) = when (k) { DeviceKind.WLED -> Color(0xFFFF8A34); DeviceKind.GOVEE -> Color(0xFF0D9488); DeviceKind.MATTER -> Color(0xFF7C3AED); DeviceKind.SWITCH -> Color(0xFF2563EB); DeviceKind.WEATHER -> Color(0xFFE9A700); DeviceKind.SENSOR -> Color(0xFF0891B2); DeviceKind.WAKE -> Color(0xFF475569); DeviceKind.CONTROL -> Color(0xFFDB2777) }
 
 @Composable private fun BloodsuckerTheme(content: @Composable () -> Unit) { val dark = androidx.compose.foundation.isSystemInDarkTheme(); MaterialTheme(colorScheme = if (dark) darkColorScheme(primary = Color(0xFFFFB77B), secondary = Color(0xFF6DD6CA)) else lightColorScheme(primary = Color(0xFF8B3F00), secondary = Color(0xFF006B62), background = Color(0xFFFFF8F4)), typography = Typography(), content = content) }

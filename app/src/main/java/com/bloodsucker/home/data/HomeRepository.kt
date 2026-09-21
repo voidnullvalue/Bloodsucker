@@ -18,7 +18,10 @@ class HomeRepository(context: Context) {
     private val client = MqttClient(scope, ::connectionChanged, ::messageReceived)
     private val metadataLoading = mutableSetOf<String>()
 
-    init { connect() }
+    init {
+        connect()
+        scope.launch(Dispatchers.IO) { while (isActive) { loadGatewayControls(); delay(30_000) } }
+    }
     fun connect() { mutable.update { it.copy(connection = ConnectionState.CONNECTING, lastError = null) }; client.connect(state.value.brokerUri, clientId) }
     fun disconnect() = client.disconnect()
     fun setBroker(value: String) { val clean = value.trim(); if (!clean.startsWith("tcp://") && !clean.startsWith("ssl://") && !clean.startsWith("tls://")) return; prefs.edit().putString("broker", clean).apply(); mutable.update { it.copy(brokerUri = clean) }; connect() }
@@ -30,6 +33,7 @@ class HomeRepository(context: Context) {
         DeviceKind.WLED -> publishValidated(wledTopic(device), if (on) "ON" else "OFF")
         DeviceKind.SWITCH -> publishValidated("gateway/device/${device.key.substringAfter(':')}/switch/set", if (on) "on" else "off")
         DeviceKind.MATTER -> matterCommand(device, if (on) 1 else 0)
+        DeviceKind.CONTROL -> sendGatewayControl(device, if (on) "on" else "off")
         else -> false
         }
         mutable.update { current ->
@@ -47,6 +51,7 @@ class HomeRepository(context: Context) {
                 val (node, endpoint) = device.key.removePrefix("matter:").split(':').map(String::toInt)
                 if (node != 1 || endpoint != 1 || level !in 0..100) false else publishValidated("matter/rpc/request", JSONObject().put("id", "android-${UUID.randomUUID()}").put("operation", "write").put("node_id", node).put("endpoint", endpoint).put("cluster", 514).put("attribute", 2).put("value", level).toString())
             }
+            DeviceKind.CONTROL -> sendGatewayControl(device, level.toString())
             else -> false
         }
     }
@@ -59,6 +64,25 @@ class HomeRepository(context: Context) {
         if (device.kind != DeviceKind.WLED || prefix !in setOf("FX", "FP", "SX", "IX", "PL", "TT")) return false
         val range = if (prefix == "PL") 1..250 else if (prefix == "TT") 0..65000 else 0..255
         return value.takeIf { it in range }?.let { publishValidated("${wledTopic(device)}/api", "$prefix=$it") } ?: false
+    }
+    fun setGeneric(device: SmartDevice, value: String): Boolean =
+        if (device.kind == DeviceKind.CONTROL) sendGatewayControl(device, value) else false
+
+    private fun sendGatewayControl(device: SmartDevice, value: String): Boolean {
+        if (device.stateTopic.isBlank()) return false
+        scope.launch(Dispatchers.IO) {
+            val sent = GatewayControls.send(device.stateTopic, value)
+            mutable.update { it.copy(lastError = if (sent) null else "Gateway rejected ${device.name} control") }
+            if (sent) loadGatewayControls()
+        }
+        return true
+    }
+    private fun loadGatewayControls() {
+        val controls = GatewayControls.fetch(); if (controls.isEmpty()) return
+        mutable.update { current ->
+            val keys = controls.mapTo(mutableSetOf()) { it.key }
+            current.copy(devices = (current.devices.filterNot { it.key in keys } + controls).sortedBy { it.name })
+        }
     }
     private fun wledTopic(device: SmartDevice) = wledMqttTopic(device.key)
     private fun matterCommand(device: SmartDevice, command: Int): Boolean {
