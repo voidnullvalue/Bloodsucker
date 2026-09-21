@@ -16,12 +16,15 @@ class GatewayControlsTest {
         assertEquals(4.5, controls.first { it.controlType == "number" }.numericValue!!, 0.0)
     }
 
-    @Test fun excludesControlsAlreadyHandledNatively() {
+    @Test fun gatewaySeedsWledLightsWhileExcludingOtherNativeControls() {
         val controls = GatewayControls.parse("""[
-          {"topic":"wled/abcdef/status","writable":true,"control":"wled","value":"online"},
+          {"topic":"wled/abcdef/status","name":"Kitchen","writable":true,"control":"wled","value":"online","last_seen":4},
           {"topic":"matter/1/1/514/2","writable":true,"control":"percent","value":"0"},
           {"topic":"wol/aabbccddeeff/","writable":true,"control":"trigger","value":"registered"}
         ]""")
-        assertTrue(controls.isEmpty())
+        assertEquals(1, controls.size)
+        assertEquals("wled:ABCDEF", controls.single().key)
+        assertEquals("Kitchen", controls.single().name)
+        assertTrue(controls.single().online)
     }
 }

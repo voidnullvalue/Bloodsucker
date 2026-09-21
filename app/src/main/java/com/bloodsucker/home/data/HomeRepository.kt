@@ -81,8 +81,13 @@ class HomeRepository(context: Context) {
         val controls = GatewayControls.fetch(); if (controls.isEmpty()) return
         mutable.update { current ->
             val keys = controls.mapTo(mutableSetOf()) { it.key }
-            current.copy(devices = (current.devices.filterNot { it.key in keys } + controls).sortedBy { it.name })
+            val merged = controls.map { incoming ->
+                val old = current.devices.firstOrNull { it.key == incoming.key }
+                if (incoming.kind == DeviceKind.WLED) merge(old, incoming) else incoming
+            }
+            current.copy(devices = (current.devices.filterNot { it.key in keys } + merged).sortedBy { it.name })
         }
+        controls.filter { it.kind == DeviceKind.WLED }.forEach { loadWledMetadata(it.key.substringAfter(':')) }
     }
     private fun wledTopic(device: SmartDevice) = wledMqttTopic(device.key)
     private fun matterCommand(device: SmartDevice, command: Int): Boolean {

@@ -23,7 +23,17 @@ object GatewayControls {
                 val item = array.optJSONObject(i) ?: continue
                 if (!item.optBoolean("writable")) continue
                 val topic = item.optString("topic"); val type = item.optString("control")
-                if (type.isBlank() || type in setOf("wled", "percent", "trigger") || item.optString("id").startsWith("switch-")) continue
+                if (type == "wled") {
+                    val id = topic.split('/').getOrNull(1)?.takeIf { it.matches(Regex("[0-9a-fA-F]{6}")) } ?: continue
+                    add(SmartDevice(
+                        key = "wled:${id.uppercase()}", kind = DeviceKind.WLED,
+                        name = item.optString("name").ifBlank { "WLED ${id.uppercase()}" },
+                        online = item.optString("value").equals("online", true),
+                        lastSeen = item.optLong("last_seen") * 1000
+                    ))
+                    continue
+                }
+                if (type.isBlank() || type in setOf("percent", "trigger") || item.optString("id").startsWith("switch-")) continue
                 val raw = item.optString("value")
                 val obj = runCatching { JSONObject(raw) }.getOrNull()
                 val scalar = obj?.opt("value")?.toString() ?: raw
