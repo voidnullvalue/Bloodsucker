@@ -6,8 +6,11 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -20,12 +23,18 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.IntSize
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.bloodsucker.home.data.HomeRepository
@@ -33,6 +42,10 @@ import com.bloodsucker.home.model.*
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.*
+import kotlin.math.PI
+import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.sin
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) { super.onCreate(savedInstanceState); enableEdgeToEdge(); setContent { BloodsuckerTheme { App() } } }
@@ -273,12 +286,10 @@ private enum class Tab(val title: String, val icon: ImageVector) { HOME("Home", 
     var hue by remember(device.hue) { mutableFloatStateOf((device.hue ?: 0).toFloat()) }
     var saturation by remember(device.saturation) { mutableFloatStateOf((device.saturation ?: 0).toFloat()) }
     var hsvBrightness by remember(device.level) { mutableFloatStateOf((device.level ?: 100).toFloat()) }
-    Text("Hue ${hue.toInt()}", style = MaterialTheme.typography.labelLarge)
-    Slider(hue, { hue = it }, valueRange = 0f..360f)
-    Text("Saturation ${saturation.toInt()}", style = MaterialTheme.typography.labelLarge)
-    Slider(saturation, { saturation = it }, valueRange = 0f..100f)
-    Text("HSV brightness ${hsvBrightness.toInt()}", style = MaterialTheme.typography.labelLarge)
-    Slider(hsvBrightness, { hsvBrightness = it }, valueRange = 0f..100f)
+    Text("Color", style = MaterialTheme.typography.labelLarge)
+    KasaColorWheel(hue, saturation, hsvBrightness) { nextHue, nextSaturation, nextBrightness ->
+        hue = nextHue; saturation = nextSaturation; hsvBrightness = nextBrightness
+    }
     FilledTonalButton({ vm.kasaHsv(device, hue.toInt(), saturation.toInt(), hsvBrightness.toInt()) }, modifier = Modifier.fillMaxWidth()) { Text("Apply color") }
     Spacer(Modifier.height(8.dp))
     Text("Light presets", style = MaterialTheme.typography.labelLarge)
@@ -287,6 +298,55 @@ private enum class Tab(val title: String, val icon: ImageVector) { HOME("Home", 
     }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         (3..4).forEach { preset -> OutlinedButton({ vm.kasaPreset(device, preset) }, Modifier.weight(1f)) { Text("Light preset $preset") } }
+    }
+}
+
+@Composable private fun KasaColorWheel(hue: Float, saturation: Float, brightness: Float, onChange: (Float, Float, Float) -> Unit) {
+    fun select(position: Offset, pickerSize: IntSize) {
+        val diameter = minOf(pickerSize.width, pickerSize.height).toFloat()
+        if (diameter <= 0f) return
+        val center = Offset(pickerSize.width / 2f, pickerSize.height / 2f)
+        val outer = diameter / 2f
+        val ringWidth = diameter * .13f
+        val distance = (position - center).getDistance()
+        if (distance in (outer - ringWidth)..outer) {
+            val nextHue = ((atan2(position.y - center.y, position.x - center.x) * 180f / PI.toFloat()) + 90f + 360f) % 360f
+            onChange(nextHue, saturation, brightness)
+        } else {
+            val half = outer - ringWidth - diameter * .035f
+            val left = center.x - half
+            val top = center.y - half
+            if (position.x in left..(left + half * 2f) && position.y in top..(top + half * 2f)) {
+                onChange(hue, ((position.x - left) / (half * 2f) * 100f).coerceIn(0f, 100f), (100f - (position.y - top) / (half * 2f) * 100f).coerceIn(0f, 100f))
+            }
+        }
+    }
+    Canvas(
+        Modifier.fillMaxWidth().aspectRatio(1f).pointerInput(hue, saturation, brightness) {
+            detectTapGestures { select(it, size) }
+        }.pointerInput(hue, saturation, brightness) {
+            detectDragGestures(onDragStart = { select(it, size) }) { change, _ -> select(change.position, size); change.consume() }
+        }
+    ) {
+        val diameter = minOf(size.width, size.height)
+        val center = Offset(size.width / 2f, size.height / 2f)
+        val outer = diameter / 2f
+        val ringWidth = diameter * .13f
+        repeat(180) { step ->
+            val colorHue = step * 2f
+            drawArc(Color.hsv(colorHue, 100f, 100f), colorHue - 90f, 2.5f, false, Offset(center.x - outer, center.y - outer), Size(diameter, diameter), style = Stroke(ringWidth))
+        }
+        val half = outer - ringWidth - diameter * .035f
+        val topLeft = Offset(center.x - half, center.y - half)
+        val fieldSize = Size(half * 2f, half * 2f)
+        drawRect(Brush.horizontalGradient(listOf(Color.White, Color.hsv(hue, 100f, 100f)), startX = topLeft.x, endX = topLeft.x + fieldSize.width), topLeft, fieldSize)
+        drawRect(Brush.verticalGradient(listOf(Color.Transparent, Color.Black), startY = topLeft.y, endY = topLeft.y + fieldSize.height), topLeft, fieldSize)
+        val hueAngle = (hue - 90f) * PI.toFloat() / 180f
+        val ringMarker = Offset(center.x + cos(hueAngle) * (outer - ringWidth / 2f), center.y + sin(hueAngle) * (outer - ringWidth / 2f))
+        drawCircle(Color.White, ringWidth * .22f, ringMarker, style = Stroke(ringWidth * .12f))
+        val marker = Offset(topLeft.x + saturation / 100f * fieldSize.width, topLeft.y + (1f - brightness / 100f) * fieldSize.height)
+        drawCircle(Color.White, 9.dp.toPx(), marker, style = Stroke(3.dp.toPx()))
+        drawCircle(Color.Black, 12.dp.toPx(), marker, style = Stroke(1.dp.toPx()))
     }
 }
 
