@@ -11,6 +11,7 @@ data class DiscoveryResult(val device: SmartDevice? = null, val forecast: Foreca
 object TopicDiscovery {
     private val secret = Regex("(^|/)(password|passwd|secret|token|apikey|api_key|credential|auth)(/|$)", RegexOption.IGNORE_CASE)
     private val wled = Regex("^wled/([0-9a-fA-F]{6})/(status|g|c|v)$")
+    private val kasa = Regex("^kasa/([0-9a-fA-F]{12})/(state|availability)$")
     private val matter = Regex("^matter/(\\d+)/(\\d+)/(\\d+)/(\\d+)$")
     private val govee = Regex("^ble/(?:[^/]+/)?([^/]+?)(?:/(?:advertisement|state))?$")
     private val wol = Regex("^wol/([0-9a-fA-F]{12})/$")
@@ -22,6 +23,28 @@ object TopicDiscovery {
     fun parse(topic: String, bytes: ByteArray, now: Long = System.currentTimeMillis()): DiscoveryResult {
         if (topic.startsWith("\$SYS/") || secret.containsMatchIn(topic) || bytes.size > 64 * 1024) return DiscoveryResult()
         val payload = bytes.toString(Charsets.UTF_8).trim()
+        kasa.matchEntire(topic)?.let { m ->
+            val mac = m.groupValues[1].uppercase()
+            val leaf = m.groupValues[2]
+            val fallbackName = "Kasa KL125 ${mac.takeLast(4)}"
+            if (leaf == "availability") {
+                return DiscoveryResult(SmartDevice("kasa:$mac", DeviceKind.KASA, fallbackName, online = payload.equals("online", true), lastSeen = now), recognized = true)
+            }
+            val obj = runCatching { JSONObject(payload) }.getOrNull() ?: return DiscoveryResult(recognized = true)
+            val hsv = obj.optJSONArray("hsv") ?: obj.optJSONObject("features")?.optJSONArray("hsv")
+            val name = obj.optString("alias").takeIf { it.isNotBlank() }
+                ?: obj.optString("name").takeIf { it.isNotBlank() }
+                ?: fallbackName
+            fun bounded(key: String, range: IntRange): Int? = obj.takeIf { it.has(key) && !it.isNull(key) }?.optInt(key)?.takeIf { it in range }
+            val features = obj.optJSONObject("features")
+            val level = bounded("brightness", 0..100) ?: features?.takeIf { it.has("brightness") }?.optInt("brightness")?.takeIf { it in 0..100 }
+            val temperature = bounded("color_temp_kelvin", 2500..6500) ?: features?.takeIf { it.has("color_temperature") }?.optInt("color_temperature")?.takeIf { it in 2500..6500 }
+            val hue = hsv?.takeIf { it.length() >= 3 }?.optInt(0)?.takeIf { it in 0..360 }
+            val saturation = hsv?.takeIf { it.length() >= 3 }?.optInt(1)?.takeIf { it in 0..100 }
+            val power = when (obj.optString("state").uppercase()) { "ON" -> true; "OFF" -> false; else -> null }
+                ?: features?.takeIf { it.has("state") }?.optBoolean("state")
+            return DiscoveryResult(SmartDevice("kasa:$mac", DeviceKind.KASA, name, lastSeen = now, power = power, level = level, hue = hue, saturation = saturation, colorTemperatureKelvin = temperature), recognized = true)
+        }
         wled.matchEntire(topic)?.let { m ->
             val id = m.groupValues[1].uppercase()
             val leaf = m.groupValues[2]

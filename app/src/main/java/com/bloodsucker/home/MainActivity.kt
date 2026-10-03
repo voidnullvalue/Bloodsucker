@@ -45,6 +45,9 @@ class MainViewModel(private val repository: HomeRepository) : androidx.lifecycle
     fun wake(d: SmartDevice) = repository.wake(d)
     fun wledApi(d: SmartDevice, prefix: String, value: Int) = repository.wledApi(d, prefix, value)
     fun wledColor(d: SmartDevice, color: String) = repository.setWledColor(d, color)
+    fun kasaHsv(d: SmartDevice, hue: Int, saturation: Int, brightness: Int) = repository.setKasaHsv(d, hue, saturation, brightness)
+    fun kasaTemperature(d: SmartDevice, kelvin: Int) = repository.setKasaColorTemperature(d, kelvin)
+    fun kasaPreset(d: SmartDevice, preset: Int) = repository.setKasaPreset(d, preset)
     fun generic(d: SmartDevice, value: String) = repository.setGeneric(d, value)
     fun favorite(d: SmartDevice) = repository.toggleFavorite(d.key)
     fun alias(d: SmartDevice, name: String, room: String) = repository.setAlias(d.key, name, room)
@@ -71,7 +74,7 @@ private enum class Tab(val title: String, val icon: ImageVector) { HOME("Home", 
         Box(Modifier.padding(padding).fillMaxSize()) {
             when (tab) {
                 Tab.HOME -> HomeScreen(state, vm)
-                Tab.LIGHTS -> DeviceList(state.devices.filter { it.kind == DeviceKind.WLED }, "No lights yet", vm)
+                Tab.LIGHTS -> DeviceList(state.devices.filter { it.kind == DeviceKind.WLED || it.kind == DeviceKind.KASA }, "No lights yet", vm)
                 Tab.CLIMATE -> ClimateScreen(state, vm)
                 Tab.DEVICES -> DeviceList(state.devices.filter { it.kind in setOf(DeviceKind.SWITCH, DeviceKind.MATTER, DeviceKind.WAKE, DeviceKind.CONTROL) }, "No controllable devices yet", vm)
                 Tab.SETTINGS -> SettingsScreen(state, vm)
@@ -154,6 +157,7 @@ private enum class Tab(val title: String, val icon: ImageVector) { HOME("Home", 
                 Column {
                     HorizontalDivider(Modifier.padding(vertical = 12.dp))
                     if (device.kind == DeviceKind.WLED) WledPanel(device, vm)
+                    else if (device.kind == DeviceKind.KASA) KasaPanel(device, vm)
                     else device.level?.let { current ->
                         Text("Fan speed", style = MaterialTheme.typography.labelLarge)
                         var slider by remember(current) { mutableFloatStateOf(current.toFloat()) }
@@ -253,6 +257,39 @@ private enum class Tab(val title: String, val icon: ImageVector) { HOME("Home", 
     }
 }
 
+@Composable private fun KasaPanel(device: SmartDevice, vm: MainViewModel) {
+    Text("Power", style = MaterialTheme.typography.labelLarge)
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        FilledTonalButton({ vm.setPower(device, true) }) { Text("On") }
+        FilledTonalButton({ vm.setPower(device, false) }) { Text("Off") }
+    }
+    Spacer(Modifier.height(8.dp))
+    var brightness by remember(device.level) { mutableFloatStateOf((device.level ?: 100).toFloat()) }
+    Text("Brightness ${brightness.toInt()}", style = MaterialTheme.typography.labelLarge)
+    Slider(brightness, { brightness = it }, onValueChangeFinished = { vm.setLevel(device, brightness.toInt()) }, valueRange = 0f..100f)
+    var temperature by remember(device.colorTemperatureKelvin) { mutableFloatStateOf((device.colorTemperatureKelvin ?: 2700).toFloat()) }
+    Text("Color temperature ${temperature.toInt()} K", style = MaterialTheme.typography.labelLarge)
+    Slider(temperature, { temperature = it }, onValueChangeFinished = { vm.kasaTemperature(device, temperature.toInt()) }, valueRange = 2500f..6500f)
+    var hue by remember(device.hue) { mutableFloatStateOf((device.hue ?: 0).toFloat()) }
+    var saturation by remember(device.saturation) { mutableFloatStateOf((device.saturation ?: 0).toFloat()) }
+    var hsvBrightness by remember(device.level) { mutableFloatStateOf((device.level ?: 100).toFloat()) }
+    Text("Hue ${hue.toInt()}", style = MaterialTheme.typography.labelLarge)
+    Slider(hue, { hue = it }, valueRange = 0f..360f)
+    Text("Saturation ${saturation.toInt()}", style = MaterialTheme.typography.labelLarge)
+    Slider(saturation, { saturation = it }, valueRange = 0f..100f)
+    Text("HSV brightness ${hsvBrightness.toInt()}", style = MaterialTheme.typography.labelLarge)
+    Slider(hsvBrightness, { hsvBrightness = it }, valueRange = 0f..100f)
+    FilledTonalButton({ vm.kasaHsv(device, hue.toInt(), saturation.toInt(), hsvBrightness.toInt()) }, modifier = Modifier.fillMaxWidth()) { Text("Apply color") }
+    Spacer(Modifier.height(8.dp))
+    Text("Light presets", style = MaterialTheme.typography.labelLarge)
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        (1..2).forEach { preset -> OutlinedButton({ vm.kasaPreset(device, preset) }, Modifier.weight(1f)) { Text("Light preset $preset") } }
+    }
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        (3..4).forEach { preset -> OutlinedButton({ vm.kasaPreset(device, preset) }, Modifier.weight(1f)) { Text("Light preset $preset") } }
+    }
+}
+
 @Composable private fun WledSlider(label: String, initial: Int, send: (Int) -> Unit) {
     var value by remember(initial) { mutableFloatStateOf(initial.toFloat()) }
     Text("$label ${value.toInt()}", style = MaterialTheme.typography.labelLarge)
@@ -296,7 +333,7 @@ private fun readingInt(device: SmartDevice, label: String) = device.readings.fir
 private fun connectionText(s: AppState) = when (s.connection) { ConnectionState.CONNECTED -> "Connected to ${s.brokerUri.removePrefix("tcp://").removePrefix("ssl://")}"; ConnectionState.CONNECTING -> "Connecting…"; ConnectionState.DISCONNECTED -> "Offline" }
 private fun connectionColor(s: ConnectionState) = when (s) { ConnectionState.CONNECTED -> Color(0xFF238636); ConnectionState.CONNECTING -> Color(0xFFE09F00); ConnectionState.DISCONNECTED -> Color(0xFFC53D3D) }
 private fun freshness(d: SmartDevice): String { val mins = (System.currentTimeMillis() - d.lastSeen) / 60_000; return when { !d.online -> "Offline"; mins < 1 -> "Just now"; mins < 60 -> "$mins min ago"; else -> "Stale" } }
-private fun kindIcon(k: DeviceKind) = when (k) { DeviceKind.WLED -> Icons.Outlined.Lightbulb; DeviceKind.GOVEE -> Icons.Outlined.Thermostat; DeviceKind.MATTER -> Icons.Outlined.Air; DeviceKind.SWITCH -> Icons.Outlined.ToggleOn; DeviceKind.WEATHER -> Icons.Outlined.WbSunny; DeviceKind.SENSOR -> Icons.Outlined.Sensors; DeviceKind.WAKE -> Icons.Outlined.Computer; DeviceKind.CONTROL -> Icons.Outlined.Tune }
-private fun kindColor(k: DeviceKind) = when (k) { DeviceKind.WLED -> Color(0xFFFF8A34); DeviceKind.GOVEE -> Color(0xFF0D9488); DeviceKind.MATTER -> Color(0xFF7C3AED); DeviceKind.SWITCH -> Color(0xFF2563EB); DeviceKind.WEATHER -> Color(0xFFE9A700); DeviceKind.SENSOR -> Color(0xFF0891B2); DeviceKind.WAKE -> Color(0xFF475569); DeviceKind.CONTROL -> Color(0xFFDB2777) }
+private fun kindIcon(k: DeviceKind) = when (k) { DeviceKind.WLED, DeviceKind.KASA -> Icons.Outlined.Lightbulb; DeviceKind.GOVEE -> Icons.Outlined.Thermostat; DeviceKind.MATTER -> Icons.Outlined.Air; DeviceKind.SWITCH -> Icons.Outlined.ToggleOn; DeviceKind.WEATHER -> Icons.Outlined.WbSunny; DeviceKind.SENSOR -> Icons.Outlined.Sensors; DeviceKind.WAKE -> Icons.Outlined.Computer; DeviceKind.CONTROL -> Icons.Outlined.Tune }
+private fun kindColor(k: DeviceKind) = when (k) { DeviceKind.WLED -> Color(0xFFFF8A34); DeviceKind.KASA -> Color(0xFFFF8A34); DeviceKind.GOVEE -> Color(0xFF0D9488); DeviceKind.MATTER -> Color(0xFF7C3AED); DeviceKind.SWITCH -> Color(0xFF2563EB); DeviceKind.WEATHER -> Color(0xFFE9A700); DeviceKind.SENSOR -> Color(0xFF0891B2); DeviceKind.WAKE -> Color(0xFF475569); DeviceKind.CONTROL -> Color(0xFFDB2777) }
 
 @Composable private fun BloodsuckerTheme(content: @Composable () -> Unit) { val dark = androidx.compose.foundation.isSystemInDarkTheme(); MaterialTheme(colorScheme = if (dark) darkColorScheme(primary = Color(0xFFFFB77B), secondary = Color(0xFF6DD6CA)) else lightColorScheme(primary = Color(0xFF8B3F00), secondary = Color(0xFF006B62), background = Color(0xFFFFF8F4)), typography = Typography(), content = content) }

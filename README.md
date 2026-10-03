@@ -1,8 +1,9 @@
 # Bloodsucker Android
 
 A native Material 3 smart-home client for the MQTT broker at
-`tcp://192.168.88.14:1883`. It continuously discovers WLED lights, Govee BLE
-sensors, weather, Matter endpoints, gateway switches, and Wake-on-LAN devices.
+`tcp://192.168.88.14:1883`. It continuously discovers WLED lights, locally
+bridged TP-Link Kasa/KL125 lights, Govee BLE sensors, weather, Matter endpoints,
+gateway switches, and Wake-on-LAN devices.
 
 ## Development model
 

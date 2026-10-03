@@ -1,7 +1,7 @@
 package com.bloodsucker.home.model
 
 enum class ConnectionState { DISCONNECTED, CONNECTING, CONNECTED }
-enum class DeviceKind { WLED, GOVEE, MATTER, SWITCH, WEATHER, SENSOR, WAKE, CONTROL }
+enum class DeviceKind { WLED, KASA, GOVEE, MATTER, SWITCH, WEATHER, SENSOR, WAKE, CONTROL }
 
 data class Reading(val label: String, val value: String)
 data class NamedValue(val value: Int, val name: String)
@@ -22,6 +22,9 @@ data class SmartDevice(
     val power: Boolean? = null,
     val level: Int? = null,
     val color: String? = null,
+    val hue: Int? = null,
+    val saturation: Int? = null,
+    val colorTemperatureKelvin: Int? = null,
     val favorite: Boolean = false,
     val supported: Boolean = true,
     val detail: String = "",

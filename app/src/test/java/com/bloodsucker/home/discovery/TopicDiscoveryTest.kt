@@ -60,4 +60,31 @@ class TopicDiscoveryTest {
         assertEquals("7", d.readings.first { it.label == "Palette" }.value)
         assertEquals("3", d.readings.first { it.label == "Preset" }.value)
     }
+
+    @Test fun kasaStateUsesStableIdentityAndActualRetainedFields() {
+        val fixture = """{"state":"ON","brightness":100,"hsv":[0,0,100],"color_mode":"color_temp","color_temp_kelvin":2700,"ip":"192.168.88.116","features":{"state":true,"brightness":100,"color_temperature":2700,"hsv":[0,0,100]}}"""
+        val d = TopicDiscovery.parse("kasa/3c64cf562bf6/state", fixture.toByteArray()).device!!
+        assertEquals("kasa:3C64CF562BF6", d.key)
+        assertEquals(DeviceKind.KASA, d.kind)
+        assertTrue(d.power!!)
+        assertEquals(100, d.level)
+        assertEquals(0, d.hue)
+        assertEquals(0, d.saturation)
+        assertEquals(2700, d.colorTemperatureKelvin)
+    }
+
+    @Test fun kasaBulbBasesRemainIndependentAndAvailabilityMapsOnline() {
+        val a = TopicDiscovery.parse("kasa/3c64cf562bf6/availability", "online".toByteArray()).device!!
+        val b = TopicDiscovery.parse("kasa/3c64cf563ce3/availability", "offline".toByteArray()).device!!
+        assertEquals("kasa:3C64CF562BF6", a.key)
+        assertEquals("kasa:3C64CF563CE3", b.key)
+        assertTrue(a.online)
+        assertFalse(b.online)
+    }
+
+    @Test fun invalidKasaTopicsAreNotRecognizedAsKasa() {
+        assertFalse(TopicDiscovery.parse("kasa/3c64cf562bf/state", "{}".toByteArray()).recognized)
+        assertFalse(TopicDiscovery.parse("kasa/3c64cf562bfz/state", "{}".toByteArray()).recognized)
+        assertFalse(TopicDiscovery.parse("kasa/3c64cf562bf6/response", "{}".toByteArray()).recognized)
+    }
 }

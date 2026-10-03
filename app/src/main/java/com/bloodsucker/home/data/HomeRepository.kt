@@ -31,6 +31,7 @@ class HomeRepository(context: Context) {
     fun setPower(device: SmartDevice, on: Boolean): Boolean {
         val sent = when (device.kind) {
         DeviceKind.WLED -> publishValidated(wledTopic(device), if (on) "ON" else "OFF")
+        DeviceKind.KASA -> publishValidated(kasaMqttTopic(device.key) + "/set", if (on) "ON" else "OFF")
         DeviceKind.SWITCH -> publishValidated("gateway/device/${device.key.substringAfter(':')}/switch/set", if (on) "on" else "off")
         DeviceKind.MATTER -> matterCommand(device, if (on) 1 else 0)
         DeviceKind.CONTROL -> sendGatewayControl(device, if (on) "on" else "off")
@@ -47,6 +48,7 @@ class HomeRepository(context: Context) {
     fun setLevel(device: SmartDevice, level: Int): Boolean {
         return when (device.kind) {
             DeviceKind.WLED -> publishValidated(wledTopic(device), level.coerceIn(0, 255).toString())
+            DeviceKind.KASA -> kasaBrightnessPayload(level)?.let { publishValidated(kasaMqttTopic(device.key) + "/feature/brightness/set", it) } ?: false
             DeviceKind.MATTER -> {
                 val (node, endpoint) = device.key.removePrefix("matter:").split(':').map(String::toInt)
                 if (node != 1 || endpoint != 1 || level !in 0..100) false else publishValidated("matter/rpc/request", JSONObject().put("id", "android-${UUID.randomUUID()}").put("operation", "write").put("node_id", node).put("endpoint", endpoint).put("cluster", 514).put("attribute", 2).put("value", level).toString())
@@ -60,6 +62,14 @@ class HomeRepository(context: Context) {
         val normalized = color.trim().uppercase().let { if (it.startsWith('#')) it else "#$it" }
         return if (device.kind == DeviceKind.WLED && normalized.matches(Regex("#[0-9A-F]{6}"))) publishValidated("${wledTopic(device)}/col", normalized) else false
     }
+    fun setKasaHsv(device: SmartDevice, hue: Int, saturation: Int, brightness: Int): Boolean =
+        kasaHsvPayload(hue, saturation, brightness)?.let { payload ->
+            if (device.kind == DeviceKind.KASA) publishValidated(kasaMqttTopic(device.key) + "/feature/hsv/set", payload) else false
+        } ?: false
+    fun setKasaColorTemperature(device: SmartDevice, kelvin: Int): Boolean =
+        kasaColorTemperaturePayload(kelvin)?.let { payload -> if (device.kind == DeviceKind.KASA) publishValidated(kasaMqttTopic(device.key) + "/feature/color_temperature/set", payload) else false } ?: false
+    fun setKasaPreset(device: SmartDevice, preset: Int): Boolean =
+        kasaPresetPayload(preset)?.let { payload -> if (device.kind == DeviceKind.KASA) publishValidated(kasaMqttTopic(device.key) + "/feature/light_preset/set", payload) else false } ?: false
     fun wledApi(device: SmartDevice, prefix: String, value: Int): Boolean {
         if (device.kind != DeviceKind.WLED || prefix !in setOf("FX", "FP", "SX", "IX", "PL", "TT")) return false
         val range = if (prefix == "PL") 1..250 else if (prefix == "TT") 0..65000 else 0..255
@@ -131,8 +141,21 @@ class HomeRepository(context: Context) {
             synchronized(metadataLoading) { metadataLoading.remove(id) }
         }
     }
-    private fun merge(old: SmartDevice?, new: SmartDevice): SmartDevice = if (old == null) new else new.copy(name = if (new.name.startsWith("WLED ") && !old.name.startsWith("WLED ")) old.name else new.name, readings = (old.readings.associateBy { it.label } + new.readings.associateBy { it.label }).values.toList(), power = new.power ?: old.power, level = new.level ?: old.level, color = new.color ?: old.color, online = if (new.kind == DeviceKind.WLED && new.detail.isNotBlank()) old.online else new.online, wledControls = old.wledControls)
+    private fun merge(old: SmartDevice?, new: SmartDevice): SmartDevice = if (old == null) new else new.copy(
+        name = if ((new.name.startsWith("WLED ") || new.name.startsWith("Kasa KL125 ")) && !old.name.startsWith("WLED ") && !old.name.startsWith("Kasa KL125 ")) old.name else new.name,
+        readings = (old.readings.associateBy { it.label } + new.readings.associateBy { it.label }).values.toList(),
+        power = new.power ?: old.power, level = new.level ?: old.level, color = new.color ?: old.color,
+        hue = new.hue ?: old.hue, saturation = new.saturation ?: old.saturation, colorTemperatureKelvin = new.colorTemperatureKelvin ?: old.colorTemperatureKelvin,
+        online = if ((new.kind == DeviceKind.WLED && new.detail.isNotBlank()) || (new.kind == DeviceKind.KASA && new.power == null && new.level == null && new.hue == null && new.saturation == null && new.colorTemperatureKelvin == null)) old.online else new.online,
+        wledControls = old.wledControls
+    )
     companion object { const val DEFAULT_BROKER = "tcp://192.168.88.14:1883" }
 }
 
 internal fun wledMqttTopic(deviceKey: String) = "wled/${deviceKey.substringAfter(':').lowercase()}"
+internal fun kasaMqttTopic(deviceKey: String) = "kasa/${deviceKey.removePrefix("kasa:").lowercase()}"
+internal fun kasaBrightnessPayload(brightness: Int): String? = brightness.takeIf { it in 0..100 }?.toString()
+internal fun kasaHsvPayload(hue: Int, saturation: Int, brightness: Int): String? =
+    if (hue in 0..360 && saturation in 0..100 && brightness in 0..100) org.json.JSONArray().put(hue).put(saturation).put(brightness).toString() else null
+internal fun kasaColorTemperaturePayload(kelvin: Int): String? = kelvin.takeIf { it in 2500..6500 }?.toString()
+internal fun kasaPresetPayload(preset: Int): String? = if (preset in 1..4) "Light preset $preset" else null
