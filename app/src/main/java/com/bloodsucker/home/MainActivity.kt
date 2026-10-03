@@ -334,12 +334,12 @@ private enum class Tab(val title: String, val icon: ImageVector) { HOME("Home", 
         val ringWidth = diameter * .13f
         repeat(180) { step ->
             val colorHue = step * 2f
-            drawArc(Color.hsv(colorHue, 100f, 100f), colorHue - 90f, 2.5f, false, Offset(center.x - outer, center.y - outer), Size(diameter, diameter), style = Stroke(ringWidth))
+            drawArc(Color.hsv(colorHue, 1f, 1f), colorHue - 90f, 2.5f, false, Offset(center.x - outer, center.y - outer), Size(diameter, diameter), style = Stroke(ringWidth))
         }
         val half = outer - ringWidth - diameter * .035f
         val topLeft = Offset(center.x - half, center.y - half)
         val fieldSize = Size(half * 2f, half * 2f)
-        drawRect(Brush.horizontalGradient(listOf(Color.White, Color.hsv(hue, 100f, 100f)), startX = topLeft.x, endX = topLeft.x + fieldSize.width), topLeft, fieldSize)
+        drawRect(Brush.horizontalGradient(listOf(Color.White, Color.hsv(hue, 1f, 1f)), startX = topLeft.x, endX = topLeft.x + fieldSize.width), topLeft, fieldSize)
         drawRect(Brush.verticalGradient(listOf(Color.Transparent, Color.Black), startY = topLeft.y, endY = topLeft.y + fieldSize.height), topLeft, fieldSize)
         val hueAngle = (hue - 90f) * PI.toFloat() / 180f
         val ringMarker = Offset(center.x + cos(hueAngle) * (outer - ringWidth / 2f), center.y + sin(hueAngle) * (outer - ringWidth / 2f))
