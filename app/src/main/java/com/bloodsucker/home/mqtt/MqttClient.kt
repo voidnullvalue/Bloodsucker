@@ -15,6 +15,13 @@ class MqttClient(
     private val onState: (Boolean, String?) -> Unit,
     private val onMessage: (String, ByteArray, Boolean) -> Unit
 ) {
+    companion object {
+        // `ble/_inventory` is a retained snapshot that is just over 1 MiB. Keep
+        // enough room for useful inventory messages, while still bounding memory.
+        internal const val MAX_INBOUND_PACKET_BYTES = 8 * 1024 * 1024
+        private const val DISCARD_BUFFER_BYTES = 16 * 1024
+    }
+
     @Volatile private var socket: Socket? = null
     @Volatile private var output: DataOutputStream? = null
     @Volatile private var running = false
@@ -79,7 +86,12 @@ class MqttClient(
         writePacket(0x82, body.toByteArray())
     }
     private fun readPacket(input: DataInputStream) {
-        val header = input.readUnsignedByte(); val len = readRemaining(input); if (len > 1_048_576) throw IOException("MQTT packet too large")
+        val header = input.readUnsignedByte(); val len = readRemaining(input)
+        if (len > MAX_INBOUND_PACKET_BYTES) {
+            discardPacket(input, len)
+            Log.w("BloodsuckerMqtt", "discarded inbound MQTT packet of $len bytes")
+            return
+        }
         val body = ByteArray(len); input.readFully(body)
         when (header shr 4) {
             3 -> {
@@ -92,6 +104,15 @@ class MqttClient(
                 if (start <= body.size) onMessage(topic, body.copyOfRange(start, body.size), header and 1 != 0)
             }
             13 -> Unit
+        }
+    }
+    private fun discardPacket(input: DataInputStream, length: Int) {
+        val buffer = ByteArray(minOf(length, DISCARD_BUFFER_BYTES))
+        var remaining = length
+        while (remaining > 0) {
+            val count = minOf(remaining, buffer.size)
+            input.readFully(buffer, 0, count)
+            remaining -= count
         }
     }
     @Synchronized private fun writePacket(header: Int, body: ByteArray) {
