@@ -36,20 +36,28 @@ jobs:
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
 
-      - name: Publish GitHub release
+      - name: Publish per-commit GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
+
           VERSION=$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' app/build.gradle.kts | head -n1)
-          TAG="v${VERSION}"
+          test -n "$VERSION"
+
+          # Each main commit gets its own release, even without a version bump.
+          TAG="v${VERSION}-g${GITHUB_SHA:0:12}"
           APK="app/build/outputs/apk/debug/app-debug.apk"
-          ASSET="Bloodsucker-${TAG}-debug.apk"
+          ASSET="Bloodsucker-debug.apk"
           cp "$APK" "$ASSET"
+
+          # Re-running a workflow for the same commit updates that release.
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$ASSET" --clobber
           else
             gh release create "$TAG" "$ASSET" \
               --target "$GITHUB_SHA" \
-              --title "Bloodsucker ${TAG}" \
-              --generate-notes
+              --title "Bloodsucker ${VERSION} (${GITHUB_SHA:0:12})" \
+              --generate-notes \
+              --latest
           fi
