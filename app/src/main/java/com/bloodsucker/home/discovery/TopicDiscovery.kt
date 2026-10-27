@@ -1,5 +1,6 @@
 package com.bloodsucker.home.discovery
 
+import com.bloodsucker.home.data.EsphomeLight
 import com.bloodsucker.home.model.*
 import org.json.JSONArray
 import org.json.JSONObject
@@ -23,6 +24,20 @@ object TopicDiscovery {
     fun parse(topic: String, bytes: ByteArray, now: Long = System.currentTimeMillis()): DiscoveryResult {
         if (topic.startsWith("\$SYS/") || secret.containsMatchIn(topic) || bytes.size > 64 * 1024) return DiscoveryResult()
         val payload = bytes.toString(Charsets.UTF_8).trim()
+        if (topic == EsphomeLight.STATE_TOPIC) {
+            val values = EsphomeLight.parseState(payload) ?: return DiscoveryResult(recognized = true)
+            return DiscoveryResult(SmartDevice(
+                EsphomeLight.KEY, DeviceKind.ESPHOME, EsphomeLight.NAME, lastSeen = now,
+                power = values.power, level = values.brightness, effect = values.effect
+            ), recognized = true)
+        }
+        if (topic == EsphomeLight.AVAILABILITY_TOPIC) {
+            val online = EsphomeLight.parseAvailability(payload) ?: return DiscoveryResult(recognized = true)
+            return DiscoveryResult(SmartDevice(
+                EsphomeLight.KEY, DeviceKind.ESPHOME, EsphomeLight.NAME, online = online, lastSeen = now,
+                explicitAvailability = true
+            ), recognized = true)
+        }
         kasa.matchEntire(topic)?.let { m ->
             val mac = m.groupValues[1].uppercase()
             val leaf = m.groupValues[2]

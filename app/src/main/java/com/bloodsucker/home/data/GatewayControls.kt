@@ -23,6 +23,10 @@ object GatewayControls {
                 val item = array.optJSONObject(i) ?: continue
                 if (!item.optBoolean("writable")) continue
                 val topic = item.optString("topic"); val type = item.optString("control")
+                // Geo Lamp is native MQTT. Never create a generic light/control
+                // alias for its exact topics, and never let a stale gateway
+                // snapshot shadow the native device.
+                if (topic in EsphomeLight.topics) continue
                 if (type == "wled") {
                     val id = topic.split('/').getOrNull(1)?.takeIf { it.matches(Regex("[0-9a-fA-F]{6}")) } ?: continue
                     add(SmartDevice(
